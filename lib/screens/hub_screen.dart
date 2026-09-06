@@ -1,6 +1,12 @@
 import 'package:flutter/material.dart';
 import '../models/assistant.dart';
+import '../models/conversation.dart';
 import '../theme/app_theme.dart';
+import 'profile_screen.dart';
+import 'settings_screen.dart';
+
+const double _kWideBreakpoint = 900;
+const double _kSidebarWidth = 280;
 
 class HubScreen extends StatefulWidget {
   const HubScreen({super.key});
@@ -15,6 +21,10 @@ class _HubScreenState extends State<HubScreen> {
   final Map<String, List<ChatMessage>> _conversations = {
     for (final a in kAssistants) a.id: <ChatMessage>[],
   };
+
+  final List<ConversationSummary> _history = List.of(kMockConversations);
+  String? _activeConversationId;
+  bool _sidebarCollapsed = false;
 
   @override
   void dispose() {
@@ -44,6 +54,7 @@ class _HubScreenState extends State<HubScreen> {
     });
     _composerController.clear();
 
+    // TODO: replace with real API calls per selected assistant.
     Future.delayed(const Duration(milliseconds: 1200), () {
       if (!mounted) return;
       setState(() {
@@ -60,73 +71,329 @@ class _HubScreenState extends State<HubScreen> {
     });
   }
 
+  void _startNewChat() {
+    setState(() {
+      _activeConversationId = null;
+      for (final id in _conversations.keys) {
+        _conversations[id] = [];
+      }
+    });
+    if (MediaQuery.of(context).size.width < _kWideBreakpoint) {
+      Navigator.of(context).maybePop();
+    }
+  }
+
+  void _selectConversation(String id) {
+    // TODO: load the real conversation transcript from storage.
+    setState(() => _activeConversationId = id);
+    if (MediaQuery.of(context).size.width < _kWideBreakpoint) {
+      Navigator.of(context).maybePop();
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final selectedAssistants =
         kAssistants.where((a) => _selectedIds.contains(a.id)).toList();
 
-    return Scaffold(
-      appBar: AppBar(
-        backgroundColor: AppColors.background,
-        elevation: 0,
-        titleSpacing: 24,
-        title: Row(
-          children: [
-            Container(
-              width: 32,
-              height: 32,
-              decoration: BoxDecoration(
-                gradient: AppColors.accentGradient,
-                borderRadius: BorderRadius.circular(9),
-              ),
-              child: const Icon(Icons.hub_outlined, color: Colors.white, size: 18),
-            ),
-            const SizedBox(width: 10),
-            const Text(
-              'Nexus',
-              style: TextStyle(fontWeight: FontWeight.w700, fontSize: 18),
-            ),
-          ],
-        ),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.settings_outlined, color: AppColors.textSecondary),
-            onPressed: () {},
-          ),
-          const SizedBox(width: 8),
-          const CircleAvatar(
-            radius: 16,
-            backgroundColor: AppColors.surfaceElevated,
-            child: Icon(Icons.person_outline, size: 18, color: AppColors.textSecondary),
-          ),
-          const SizedBox(width: 16),
-        ],
-      ),
-      body: Column(
-        children: [
-          _AssistantSelector(
-            selectedIds: _selectedIds,
-            onToggle: _toggleAssistant,
-          ),
-          const Divider(height: 1, color: AppColors.border),
-          Expanded(
-            child: selectedAssistants.isEmpty
-                ? const _EmptyState()
-                : _ResponseGrid(
-                    assistants: selectedAssistants,
-                    conversations: _conversations,
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final isWide = constraints.maxWidth >= _kWideBreakpoint;
+
+        final sidebar = _HistorySidebar(
+          conversations: _history,
+          activeId: _activeConversationId,
+          onSelect: _selectConversation,
+          onNewChat: _startNewChat,
+        );
+
+        return Scaffold(
+          drawer: isWide ? null : Drawer(child: sidebar),
+          appBar: AppBar(
+            backgroundColor: AppColors.background,
+            elevation: 0,
+            titleSpacing: isWide ? 24 : 4,
+            leading: isWide
+                ? IconButton(
+                    icon: Icon(
+                      _sidebarCollapsed
+                          ? Icons.view_sidebar_outlined
+                          : Icons.view_sidebar,
+                      color: AppColors.textSecondary,
+                    ),
+                    onPressed: () =>
+                        setState(() => _sidebarCollapsed = !_sidebarCollapsed),
+                  )
+                : null,
+            title: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 32,
+                  height: 32,
+                  decoration: BoxDecoration(
+                    gradient: AppColors.accentGradient,
+                    borderRadius: BorderRadius.circular(9),
                   ),
+                  child: const Icon(Icons.hub_outlined, color: Colors.white, size: 18),
+                ),
+                const SizedBox(width: 10),
+                const Text(
+                  'Nexus',
+                  style: TextStyle(fontWeight: FontWeight.w700, fontSize: 18),
+                ),
+              ],
+            ),
+            actions: [
+              IconButton(
+                icon: const Icon(Icons.settings_outlined, color: AppColors.textSecondary),
+                onPressed: () => Navigator.of(context).push(
+                  MaterialPageRoute(builder: (context) => const SettingsScreen()),
+                ),
+              ),
+              const SizedBox(width: 8),
+              GestureDetector(
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute(builder: (context) => const ProfileScreen()),
+                ),
+                child: const CircleAvatar(
+                  radius: 16,
+                  backgroundColor: AppColors.surfaceElevated,
+                  child: Icon(Icons.person_outline, size: 18, color: AppColors.textSecondary),
+                ),
+              ),
+              const SizedBox(width: 16),
+            ],
           ),
-          _Composer(
-            controller: _composerController,
-            onSend: _sendToAll,
-            enabled: _selectedIds.isNotEmpty,
+          body: Row(
+            children: [
+              if (isWide && !_sidebarCollapsed) ...[
+                SizedBox(width: _kSidebarWidth, child: sidebar),
+                const VerticalDivider(width: 1, color: AppColors.border),
+              ],
+              Expanded(
+                child: Column(
+                  children: [
+                    _AssistantSelector(
+                      selectedIds: _selectedIds,
+                      onToggle: _toggleAssistant,
+                    ),
+                    const Divider(height: 1, color: AppColors.border),
+                    Expanded(
+                      child: selectedAssistants.isEmpty
+                          ? const _EmptyState()
+                          : _ResponseGrid(
+                              assistants: selectedAssistants,
+                              conversations: _conversations,
+                            ),
+                    ),
+                    _Composer(
+                      controller: _composerController,
+                      onSend: _sendToAll,
+                      enabled: _selectedIds.isNotEmpty,
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
+// ── History sidebar ─────────────────────────────────────────────────────
+
+class _HistorySidebar extends StatefulWidget {
+  const _HistorySidebar({
+    required this.conversations,
+    required this.activeId,
+    required this.onSelect,
+    required this.onNewChat,
+  });
+
+  final List<ConversationSummary> conversations;
+  final String? activeId;
+  final ValueChanged<String> onSelect;
+  final VoidCallback onNewChat;
+
+  @override
+  State<_HistorySidebar> createState() => _HistorySidebarState();
+}
+
+class _HistorySidebarState extends State<_HistorySidebar> {
+  final _searchController = TextEditingController();
+  String _query = '';
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  String _groupLabel(DateTime timestamp) {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final date = DateTime(timestamp.year, timestamp.month, timestamp.day);
+    final diff = today.difference(date).inDays;
+
+    if (diff == 0) return 'Today';
+    if (diff == 1) return 'Yesterday';
+    if (diff <= 7) return 'Previous 7 days';
+    return 'Older';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final filtered = widget.conversations
+        .where((c) =>
+            _query.isEmpty || c.title.toLowerCase().contains(_query.toLowerCase()))
+        .toList()
+      ..sort((a, b) => b.timestamp.compareTo(a.timestamp));
+
+    final grouped = <String, List<ConversationSummary>>{};
+    for (final c in filtered) {
+      grouped.putIfAbsent(_groupLabel(c.timestamp), () => []).add(c);
+    }
+    const order = ['Today', 'Yesterday', 'Previous 7 days', 'Older'];
+    final groupKeys = order.where((k) => grouped.containsKey(k)).toList();
+
+    return Container(
+      color: AppColors.background,
+      child: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+            child: SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: widget.onNewChat,
+                icon: const Icon(Icons.add, size: 18),
+                label: const Text('New chat'),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: AppColors.textPrimary,
+                  side: const BorderSide(color: AppColors.border),
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  alignment: Alignment.centerLeft,
+                ),
+              ),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: TextField(
+              controller: _searchController,
+              onChanged: (v) => setState(() => _query = v),
+              style: const TextStyle(fontSize: 13, color: AppColors.textPrimary),
+              decoration: const InputDecoration(
+                isDense: true,
+                hintText: 'Search chats',
+                prefixIcon: Icon(Icons.search, size: 18, color: AppColors.textMuted),
+                contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              ),
+            ),
+          ),
+          const SizedBox(height: 8),
+          Expanded(
+            child: filtered.isEmpty
+                ? const Center(
+                    child: Padding(
+                      padding: EdgeInsets.only(top: 40),
+                      child: Text(
+                        'No conversations found',
+                        style: TextStyle(color: AppColors.textMuted, fontSize: 13),
+                      ),
+                    ),
+                  )
+                : ListView(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    children: [
+                      for (final key in groupKeys) ...[
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(10, 14, 10, 6),
+                          child: Text(
+                            key.toUpperCase(),
+                            style: const TextStyle(
+                              color: AppColors.textMuted,
+                              fontSize: 11,
+                              fontWeight: FontWeight.w600,
+                              letterSpacing: 0.6,
+                            ),
+                          ),
+                        ),
+                        for (final c in grouped[key]!)
+                          _HistoryTile(
+                            conversation: c,
+                            selected: c.id == widget.activeId,
+                            onTap: () => widget.onSelect(c.id),
+                          ),
+                      ],
+                    ],
+                  ),
           ),
         ],
       ),
     );
   }
 }
+
+class _HistoryTile extends StatelessWidget {
+  const _HistoryTile({
+    required this.conversation,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final ConversationSummary conversation;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 2),
+      child: Material(
+        color: selected ? AppColors.surfaceElevated : Colors.transparent,
+        borderRadius: BorderRadius.circular(10),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(10),
+          onTap: onTap,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  conversation.title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
+                    color: selected ? AppColors.textPrimary : AppColors.textPrimary,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  conversation.preview,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 12, color: AppColors.textMuted),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ── Assistant selector, response grid, composer (unchanged) ────────────
 
 class _AssistantSelector extends StatelessWidget {
   const _AssistantSelector({required this.selectedIds, required this.onToggle});

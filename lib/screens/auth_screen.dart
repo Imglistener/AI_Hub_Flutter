@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import '../theme/app_theme.dart';
 import 'hub_screen.dart';
+import 'package:supabase_flutter/supabase_flutter.dart' show AuthException;
+import '../services/auth_service.dart';
 
 enum _AuthMode { signIn, signUp }
 
@@ -37,17 +39,38 @@ class _AuthScreenState extends State<AuthScreen> {
     });
   }
 
-    Future<void> _submit() async {
+     Future<void> _submit() async {
     if (!_formKey.currentState!.validate()) return;
 
     setState(() => _isSubmitting = true);
-    await Future.delayed(const Duration(milliseconds: 900));
-    if (!mounted) return;
-    setState(() => _isSubmitting = false);
-
-    Navigator.of(context).pushReplacement(
-      MaterialPageRoute(builder: (context) => const HubScreen()),
-    );
+    try {
+      if (_isSignUp) {
+        await AuthService.instance.signUp(
+          email: _emailController.text.trim(),
+          password: _passwordController.text,
+          fullName: _nameController.text.trim(),
+        );
+      } else {
+        await AuthService.instance.signIn(
+          email: _emailController.text.trim(),
+          password: _passwordController.text,
+        );
+      }
+      if (!mounted) return;
+      Navigator.of(context).pushReplacement(
+        MaterialPageRoute(builder: (context) => const HubScreen()),
+      );
+    } on AuthException catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Something went wrong. Please try again.')),
+      );
+    } finally {
+      if (mounted) setState(() => _isSubmitting = false);
+    }
   }
 
   @override
