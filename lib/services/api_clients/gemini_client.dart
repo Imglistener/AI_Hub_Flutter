@@ -9,7 +9,7 @@ class GeminiApiService extends AssistantApiService {
   final String apiKey;
 
   // TODO: verify against https://ai.google.dev/gemini-api/docs/models
-  static const _model = 'gemini-3.8-flash';
+  static const _model = 'gemini-3.7-flash';
 
   Uri get _endpoint => Uri.parse(
         'https://generativelanguage.googleapis.com/v1beta/models/$_model:generateContent?key=$apiKey',
