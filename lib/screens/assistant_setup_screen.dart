@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../models/assistant.dart';
+import '../services/api_key_service.dart';
 import '../theme/app_theme.dart';
 
 class AssistantSetupScreen extends StatefulWidget {
@@ -21,13 +22,22 @@ class _AssistantSetupScreenState extends State<AssistantSetupScreen> {
   final _apiKeyController = TextEditingController();
   bool _obscureKey = true;
   bool _isSaving = false;
+  bool _isConnected = false;
 
   @override
   void initState() {
     super.initState();
-    if (widget.isConnected) {
-      _apiKeyController.text = '••••••••••••••••';
-    }
+    _isConnected = widget.isConnected;
+    _loadExistingKey();
+  }
+
+  Future<void> _loadExistingKey() async {
+    final existing = await ApiKeyService.instance.getKey(widget.assistant.id);
+    if (!mounted || existing == null) return;
+    setState(() {
+      _apiKeyController.text = existing;
+      _isConnected = true;
+    });
   }
 
   @override
@@ -39,14 +49,18 @@ class _AssistantSetupScreenState extends State<AssistantSetupScreen> {
   Future<void> _save() async {
     if (!_formKey.currentState!.validate()) return;
     setState(() => _isSaving = true);
-    // TODO: securely store the key and validate it against the provider.
-    await Future.delayed(const Duration(milliseconds: 700));
+    await ApiKeyService.instance.saveKey(
+      widget.assistant.id,
+      _apiKeyController.text.trim(),
+    );
     if (!mounted) return;
     setState(() => _isSaving = false);
     Navigator.of(context).pop(true);
   }
 
-  void _disconnect() {
+  Future<void> _disconnect() async {
+    await ApiKeyService.instance.deleteKey(widget.assistant.id);
+    if (!mounted) return;
     Navigator.of(context).pop(false);
   }
 
@@ -90,9 +104,9 @@ class _AssistantSetupScreenState extends State<AssistantSetupScreen> {
                                   fontWeight: FontWeight.w700,
                                   color: AppColors.textPrimary)),
                           Text(
-                            widget.isConnected ? 'Connected' : 'Not connected',
+                            _isConnected ? 'Connected' : 'Not connected',
                             style: TextStyle(
-                              color: widget.isConnected
+                              color: _isConnected
                                   ? AppColors.success
                                   : AppColors.textMuted,
                               fontSize: 13,
@@ -128,8 +142,8 @@ class _AssistantSetupScreenState extends State<AssistantSetupScreen> {
                 ),
                 const SizedBox(height: 12),
                 Text(
-                  'Your key is stored securely on this device and is only '
-                  'used to talk directly to ${a.name}.',
+                  'Your key is stored in this device\'s secure keychain and is '
+                  'only ever sent directly to ${a.name}\'s servers.',
                   style: const TextStyle(
                       color: AppColors.textMuted, fontSize: 12, height: 1.4),
                 ),
@@ -148,7 +162,7 @@ class _AssistantSetupScreenState extends State<AssistantSetupScreen> {
                         : const Text('Save & connect'),
                   ),
                 ),
-                if (widget.isConnected) ...[
+                if (_isConnected) ...[
                   const SizedBox(height: 12),
                   SizedBox(
                     width: double.infinity,

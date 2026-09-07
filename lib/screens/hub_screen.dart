@@ -1,6 +1,12 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import '../models/assistant.dart';
 import '../models/conversation.dart';
+import '../services/api_key_service.dart';
+import '../services/assistant_api_service.dart';
+import '../services/assistant_registry.dart';
+import '../services/conversation_service.dart';
+import '../services/settings_service.dart';
 import '../theme/app_theme.dart';
 import 'profile_screen.dart';
 import 'settings_screen.dart';
@@ -22,14 +28,36 @@ class _HubScreenState extends State<HubScreen> {
     for (final a in kAssistants) a.id: <ChatMessage>[],
   };
 
-  final List<ConversationSummary> _history = List.of(kMockConversations);
+  List<ConversationSummary> _history = [];
+  bool _isLoadingHistory = true;
+  bool _isLoadingTranscript = false;
   String? _activeConversationId;
   bool _sidebarCollapsed = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadHistory();
+  }
 
   @override
   void dispose() {
     _composerController.dispose();
     super.dispose();
+  }
+
+  Future<void> _loadHistory() async {
+    try {
+      final history = await ConversationService.instance.fetchConversations();
+      if (!mounted) return;
+      setState(() {
+        _history = history;
+        _isLoadingHistory = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _isLoadingHistory = false);
+    }
   }
 
   void _toggleAssistant(String id) {
@@ -42,33 +70,165 @@ class _HubScreenState extends State<HubScreen> {
     });
   }
 
-  void _sendToAll() {
+  Future<void> _sendToAll() async {
     final text = _composerController.text.trim();
     if (text.isEmpty || _selectedIds.isEmpty) return;
 
+    final targets = List<String>.from(_selectedIds);
+    final preview = text.length > 80 ? '${text.substring(0, 80)}…' : text;
+
     setState(() {
-      for (final id in _selectedIds) {
+      for (final id in targets) {
         _conversations[id]!.add(ChatMessage(text: text, isUser: true));
         _conversations[id]!.add(const ChatMessage(text: '', isUser: false, isLoading: true));
       }
     });
     _composerController.clear();
 
-    // TODO: replace with real API calls per selected assistant.
-    Future.delayed(const Duration(milliseconds: 1200), () {
+    var conversationId = _activeConversationId;
+
+    if (conversationId == null) {
+      final defaultTitle = text.length > 40 ? '${text.substring(0, 40)}…' : text;
+      conversationId = await ConversationService.instance.createConversation(
+        title: defaultTitle,
+        preview: preview,
+        assistantIds: targets,
+      );
       if (!mounted) return;
       setState(() {
-        for (final id in _selectedIds) {
-          final convo = _conversations[id]!;
-          convo.removeLast();
-          convo.add(ChatMessage(
-            text: 'This is a placeholder reply from '
-                '${kAssistants.firstWhere((a) => a.id == id).name}.',
-            isUser: false,
-          ));
+        _activeConversationId = conversationId;
+        _history.insert(
+          0,
+          ConversationSummary(
+            id: conversationId!,
+            title: defaultTitle,
+            preview: preview,
+            timestamp: DateTime.now(),
+            assistantIds: targets,
+          ),
+        );
+      });
+
+      if (await SettingsService.instance.smartTitlesEnabled()) {
+        unawaited(_generateSmartTitle(conversationId, text, targets.first));
+      }
+    } else {
+      final existingIndex = _history.indexWhere((c) => c.id == conversationId);
+      final mergedAssistantIds = existingIndex == -1
+          ? targets
+          : {..._history[existingIndex].assistantIds, ...targets}.toList();
+
+      await ConversationService.instance.updateConversationMeta(
+        conversationId,
+        preview: preview,
+        assistantIds: mergedAssistantIds,
+      );
+      if (!mounted) return;
+      setState(() {
+        if (existingIndex != -1) {
+          final updated = _history[existingIndex].copyWith(
+            preview: preview,
+            timestamp: DateTime.now(),
+            assistantIds: mergedAssistantIds,
+          );
+          _history
+            ..removeAt(existingIndex)
+            ..insert(0, updated);
         }
       });
+    }
+
+    for (final id in targets) {
+      unawaited(ConversationService.instance.addMessage(
+        conversationId: conversationId,
+        assistantId: id,
+        role: 'user',
+        content: text,
+      ));
+    }
+
+    await Future.wait(targets.map((id) => _sendToOne(id, text, conversationId!)));
+  }
+
+  Future<void> _sendToOne(String assistantId, String prompt, String conversationId) async {
+    String resultText;
+    bool isError = false;
+
+    final apiKey = await ApiKeyService.instance.getKey(assistantId);
+    if (apiKey == null || apiKey.isEmpty) {
+      resultText = 'Not connected. Add an API key in Settings → Manage assistants.';
+      isError = true;
+    } else {
+      final client = AssistantApiRegistry.clientFor(assistantId, apiKey);
+      if (client == null) {
+        resultText = 'No client configured for this assistant.';
+        isError = true;
+      } else {
+        final history = _conversations[assistantId]!
+            .sublist(0, _conversations[assistantId]!.length - 2);
+        try {
+          resultText = await client.sendMessage(prompt: prompt, history: history);
+        } on AssistantApiException catch (e) {
+          resultText = e.message;
+          isError = true;
+        } catch (_) {
+          resultText = 'Something went wrong. Please try again.';
+          isError = true;
+        }
+      }
+    }
+
+    if (!mounted) return;
+    setState(() {
+      final convo = _conversations[assistantId]!;
+      convo.removeLast();
+      convo.add(ChatMessage(text: resultText, isUser: false, isError: isError));
     });
+
+    if (!isError) {
+      unawaited(ConversationService.instance.addMessage(
+        conversationId: conversationId,
+        assistantId: assistantId,
+        role: 'assistant',
+        content: resultText,
+      ));
+    }
+  }
+
+  Future<void> _generateSmartTitle(
+    String conversationId,
+    String firstMessage,
+    String assistantId,
+  ) async {
+    try {
+      final apiKey = await ApiKeyService.instance.getKey(assistantId);
+      if (apiKey == null || apiKey.isEmpty) return;
+      final client = AssistantApiRegistry.clientFor(assistantId, apiKey);
+      if (client == null) return;
+
+      final rawTitle = await client.sendMessage(
+        prompt: 'Summarize the following message as a short, plain title of '
+            '6 words or fewer. No quotation marks, no trailing punctuation. '
+            'Message: "$firstMessage"',
+        history: const [],
+      );
+      final cleanTitle = rawTitle.trim().replaceAll('"', '');
+      if (cleanTitle.isEmpty) return;
+
+      await ConversationService.instance.updateConversationMeta(
+        conversationId,
+        title: cleanTitle,
+      );
+      if (!mounted) return;
+      setState(() {
+        final index = _history.indexWhere((c) => c.id == conversationId);
+        if (index != -1) {
+          _history[index] = _history[index].copyWith(title: cleanTitle);
+        }
+      });
+    } catch (_) {
+      // Best-effort — keep the fallback (truncated-text) title on failure.
+    }
   }
 
   void _startNewChat() {
@@ -83,13 +243,35 @@ class _HubScreenState extends State<HubScreen> {
     }
   }
 
-  void _selectConversation(String id) {
-    // TODO: load the real conversation transcript from storage.
-    setState(() => _activeConversationId = id);
+  Future<void> _selectConversation(String id) async {
+    final summary = _history.firstWhere((c) => c.id == id);
+
+    setState(() {
+      _activeConversationId = id;
+      _selectedIds
+        ..clear()
+        ..addAll(summary.assistantIds);
+      for (final key in _conversations.keys) {
+        _conversations[key] = [];
+      }
+      _isLoadingTranscript = true;
+    });
+
     if (MediaQuery.of(context).size.width < _kWideBreakpoint) {
       Navigator.of(context).maybePop();
     }
+
+    final transcript = await ConversationService.instance
+        .fetchTranscript(id, summary.assistantIds);
+    if (!mounted) return;
+    setState(() {
+      for (final entry in transcript.entries) {
+        _conversations[entry.key] = entry.value;
+      }
+      _isLoadingTranscript = false;
+    });
   }
+  
 
   @override
   Widget build(BuildContext context) {
@@ -103,6 +285,7 @@ class _HubScreenState extends State<HubScreen> {
         final sidebar = _HistorySidebar(
           conversations: _history,
           activeId: _activeConversationId,
+          isLoading: _isLoadingHistory,
           onSelect: _selectConversation,
           onNewChat: _startNewChat,
         );
@@ -180,12 +363,14 @@ class _HubScreenState extends State<HubScreen> {
                     ),
                     const Divider(height: 1, color: AppColors.border),
                     Expanded(
-                      child: selectedAssistants.isEmpty
-                          ? const _EmptyState()
-                          : _ResponseGrid(
-                              assistants: selectedAssistants,
-                              conversations: _conversations,
-                            ),
+                      child: _isLoadingTranscript
+                          ? const Center(child: CircularProgressIndicator())
+                          : selectedAssistants.isEmpty
+                              ? const _EmptyState()
+                              : _ResponseGrid(
+                                  assistants: selectedAssistants,
+                                  conversations: _conversations,
+                                ),
                     ),
                     _Composer(
                       controller: _composerController,
@@ -202,19 +387,20 @@ class _HubScreenState extends State<HubScreen> {
     );
   }
 }
-
 // ── History sidebar ─────────────────────────────────────────────────────
 
 class _HistorySidebar extends StatefulWidget {
   const _HistorySidebar({
     required this.conversations,
     required this.activeId,
+    required this.isLoading,
     required this.onSelect,
     required this.onNewChat,
   });
 
   final List<ConversationSummary> conversations;
   final String? activeId;
+  final bool isLoading;
   final ValueChanged<String> onSelect;
   final VoidCallback onNewChat;
 
@@ -299,41 +485,43 @@ class _HistorySidebarState extends State<_HistorySidebar> {
           ),
           const SizedBox(height: 8),
           Expanded(
-            child: filtered.isEmpty
-                ? const Center(
-                    child: Padding(
-                      padding: EdgeInsets.only(top: 40),
-                      child: Text(
-                        'No conversations found',
-                        style: TextStyle(color: AppColors.textMuted, fontSize: 13),
-                      ),
-                    ),
-                  )
-                : ListView(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                    children: [
-                      for (final key in groupKeys) ...[
-                        Padding(
-                          padding: const EdgeInsets.fromLTRB(10, 14, 10, 6),
+            child: widget.isLoading
+                ? const Center(child: CircularProgressIndicator())
+                : filtered.isEmpty
+                    ? const Center(
+                        child: Padding(
+                          padding: EdgeInsets.only(top: 40),
                           child: Text(
-                            key.toUpperCase(),
-                            style: const TextStyle(
-                              color: AppColors.textMuted,
-                              fontSize: 11,
-                              fontWeight: FontWeight.w600,
-                              letterSpacing: 0.6,
-                            ),
+                            'No conversations found',
+                            style: TextStyle(color: AppColors.textMuted, fontSize: 13),
                           ),
                         ),
-                        for (final c in grouped[key]!)
-                          _HistoryTile(
-                            conversation: c,
-                            selected: c.id == widget.activeId,
-                            onTap: () => widget.onSelect(c.id),
-                          ),
-                      ],
-                    ],
-                  ),
+                      )
+                    : ListView(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        children: [
+                          for (final key in groupKeys) ...[
+                            Padding(
+                              padding: const EdgeInsets.fromLTRB(10, 14, 10, 6),
+                              child: Text(
+                                key.toUpperCase(),
+                                style: const TextStyle(
+                                  color: AppColors.textMuted,
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w600,
+                                  letterSpacing: 0.6,
+                                ),
+                              ),
+                            ),
+                            for (final c in grouped[key]!)
+                              _HistoryTile(
+                                conversation: c,
+                                selected: c.id == widget.activeId,
+                                onTap: () => widget.onSelect(c.id),
+                              ),
+                          ],
+                        ],
+                      ),
           ),
         ],
       ),
@@ -387,297 +575,6 @@ class _HistoryTile extends StatelessWidget {
               ],
             ),
           ),
-        ),
-      ),
-    );
-  }
-}
-
-// ── Assistant selector, response grid, composer (unchanged) ────────────
-
-class _AssistantSelector extends StatelessWidget {
-  const _AssistantSelector({required this.selectedIds, required this.onToggle});
-
-  final Set<String> selectedIds;
-  final ValueChanged<String> onToggle;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(vertical: 14),
-      child: SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.symmetric(horizontal: 20),
-        child: Row(
-          children: kAssistants.map((a) {
-            final selected = selectedIds.contains(a.id);
-            return Padding(
-              padding: const EdgeInsets.only(right: 10),
-              child: _AssistantChip(
-                assistant: a,
-                selected: selected,
-                onTap: () => onToggle(a.id),
-              ),
-            );
-          }).toList(),
-        ),
-      ),
-    );
-  }
-}
-
-class _AssistantChip extends StatelessWidget {
-  const _AssistantChip({
-    required this.assistant,
-    required this.selected,
-    required this.onTap,
-  });
-
-  final Assistant assistant;
-  final bool selected;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return Material(
-      color: Colors.transparent,
-      child: InkWell(
-        borderRadius: BorderRadius.circular(24),
-        onTap: onTap,
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 180),
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-          decoration: BoxDecoration(
-            color: selected ? assistant.color.withValues(alpha: 0.14) : AppColors.surface,
-            borderRadius: BorderRadius.circular(24),
-            border: Border.all(
-              color: selected ? assistant.color : AppColors.border,
-              width: selected ? 1.4 : 1,
-            ),
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(assistant.icon, size: 16, color: assistant.color),
-              const SizedBox(width: 8),
-              Text(
-                assistant.name,
-                style: TextStyle(
-                  color: selected ? AppColors.textPrimary : AppColors.textSecondary,
-                  fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
-                  fontSize: 13,
-                ),
-              ),
-              if (selected) ...[
-                const SizedBox(width: 6),
-                Icon(Icons.check_circle, size: 14, color: assistant.color),
-              ],
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _EmptyState extends StatelessWidget {
-  const _EmptyState();
-
-  @override
-  Widget build(BuildContext context) {
-    return Center(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          const Icon(Icons.forum_outlined, size: 40, color: AppColors.textMuted),
-          const SizedBox(height: 12),
-          const Text(
-            'Select at least one assistant to start',
-            style: TextStyle(color: AppColors.textSecondary),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _ResponseGrid extends StatelessWidget {
-  const _ResponseGrid({required this.assistants, required this.conversations});
-
-  final List<Assistant> assistants;
-  final Map<String, List<ChatMessage>> conversations;
-
-  @override
-  Widget build(BuildContext context) {
-    return LayoutBuilder(builder: (context, constraints) {
-      final isWide = constraints.maxWidth > 700;
-      final columns = isWide ? assistants.length.clamp(1, 3) : 1;
-
-      return GridView.builder(
-        padding: const EdgeInsets.all(16),
-        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-          crossAxisCount: columns,
-          childAspectRatio: isWide ? 0.72 : 1.5,
-          crossAxisSpacing: 16,
-          mainAxisSpacing: 16,
-        ),
-        itemCount: assistants.length,
-        itemBuilder: (context, index) {
-          final a = assistants[index];
-          return _AssistantPanel(assistant: a, messages: conversations[a.id]!);
-        },
-      );
-    });
-  }
-}
-
-class _AssistantPanel extends StatelessWidget {
-  const _AssistantPanel({required this.assistant, required this.messages});
-
-  final Assistant assistant;
-  final List<ChatMessage> messages;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      decoration: BoxDecoration(
-        color: AppColors.surface,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: AppColors.border),
-      ),
-      clipBehavior: Clip.antiAlias,
-      child: Column(
-        children: [
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-            decoration: BoxDecoration(
-              color: AppColors.surfaceElevated,
-              border: Border(bottom: BorderSide(color: AppColors.border)),
-            ),
-            child: Row(
-              children: [
-                Icon(assistant.icon, size: 16, color: assistant.color),
-                const SizedBox(width: 8),
-                Text(
-                  assistant.name,
-                  style: const TextStyle(
-                    fontWeight: FontWeight.w600,
-                    fontSize: 13,
-                    color: AppColors.textPrimary,
-                  ),
-                ),
-              ],
-            ),
-          ),
-          Expanded(
-            child: messages.isEmpty
-                ? Center(
-                    child: Text(
-                      'No messages yet',
-                      style: TextStyle(color: AppColors.textMuted, fontSize: 12),
-                    ),
-                  )
-                : ListView.builder(
-                    padding: const EdgeInsets.all(12),
-                    itemCount: messages.length,
-                    itemBuilder: (context, i) {
-                      final m = messages[i];
-                      return _MessageBubble(message: m, accent: assistant.color);
-                    },
-                  ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _MessageBubble extends StatelessWidget {
-  const _MessageBubble({required this.message, required this.accent});
-
-  final ChatMessage message;
-  final Color accent;
-
-  @override
-  Widget build(BuildContext context) {
-    final isUser = message.isUser;
-    return Align(
-      alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
-      child: Container(
-        margin: const EdgeInsets.symmetric(vertical: 4),
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-        constraints: const BoxConstraints(maxWidth: 260),
-        decoration: BoxDecoration(
-          color: isUser ? accent.withValues(alpha: 0.16) : AppColors.surfaceElevated,
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(
-            color: isUser ? accent.withValues(alpha: 0.4) : AppColors.border,
-          ),
-        ),
-        child: message.isLoading
-            ? SizedBox(
-                width: 14,
-                height: 14,
-                child: CircularProgressIndicator(strokeWidth: 2, color: accent),
-              )
-            : Text(
-                message.text,
-                style: const TextStyle(fontSize: 13, color: AppColors.textPrimary, height: 1.35),
-              ),
-      ),
-    );
-  }
-}
-
-class _Composer extends StatelessWidget {
-  const _Composer({required this.controller, required this.onSend, required this.enabled});
-
-  final TextEditingController controller;
-  final VoidCallback onSend;
-  final bool enabled;
-
-  @override
-  Widget build(BuildContext context) {
-    return SafeArea(
-      top: false,
-      child: Container(
-        padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
-        decoration: const BoxDecoration(
-          color: AppColors.surface,
-          border: Border(top: BorderSide(color: AppColors.border)),
-        ),
-        child: Row(
-          children: [
-            Expanded(
-              child: TextField(
-                controller: controller,
-                enabled: enabled,
-                minLines: 1,
-                maxLines: 5,
-                textInputAction: TextInputAction.send,
-                onSubmitted: (_) => onSend(),
-                decoration: InputDecoration(
-                  hintText: enabled
-                      ? 'Message all selected assistants…'
-                      : 'Select an assistant to begin',
-                  contentPadding:
-                      const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                ),
-              ),
-            ),
-            const SizedBox(width: 10),
-            Container(
-              decoration: BoxDecoration(
-                gradient: enabled ? AppColors.accentGradient : null,
-                color: enabled ? null : AppColors.surfaceElevated,
-                shape: BoxShape.circle,
-              ),
-              child: IconButton(
-                icon: const Icon(Icons.arrow_upward, color: Colors.white),
-                onPressed: enabled ? onSend : null,
-              ),
-            ),
-          ],
         ),
       ),
     );

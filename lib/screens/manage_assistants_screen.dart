@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../models/assistant.dart';
+import '../services/api_key_service.dart';
 import '../theme/app_theme.dart';
 import 'assistant_setup_screen.dart';
 
@@ -12,13 +13,26 @@ class ManageAssistantsScreen extends StatefulWidget {
 }
 
 class _ManageAssistantsScreenState extends State<ManageAssistantsScreen> {
-  // Placeholder connection state until real auth/storage is wired up.
-  final Map<String, bool> _connected = {
-    'claude': true,
-    'gpt': true,
-    'gemini': false,
-    'grok': false,
-  };
+  Map<String, bool> _connected = {};
+  bool _isLoading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadConnections();
+  }
+
+  Future<void> _loadConnections() async {
+    final entries = await Future.wait(kAssistants.map((a) async {
+      final hasKey = await ApiKeyService.instance.hasKey(a.id);
+      return MapEntry(a.id, hasKey);
+    }));
+    if (!mounted) return;
+    setState(() {
+      _connected = Map.fromEntries(entries);
+      _isLoading = false;
+    });
+  }
 
   Future<void> _openSetup(Assistant a) async {
     final result = await Navigator.of(context).push<bool>(
@@ -43,20 +57,22 @@ class _ManageAssistantsScreenState extends State<ManageAssistantsScreen> {
         title: const Text('Manage assistants'),
       ),
       body: SafeArea(
-        child: ListView.separated(
-          padding: const EdgeInsets.all(20),
-          itemCount: kAssistants.length,
-          separatorBuilder: (_, __) => const SizedBox(height: 12),
-          itemBuilder: (context, index) {
-            final a = kAssistants[index];
-            final isConnected = _connected[a.id] ?? false;
-            return _AssistantTile(
-              assistant: a,
-              isConnected: isConnected,
-              onTap: () => _openSetup(a),
-            );
-          },
-        ),
+        child: _isLoading
+            ? const Center(child: CircularProgressIndicator())
+            : ListView.separated(
+                padding: const EdgeInsets.all(20),
+                itemCount: kAssistants.length,
+                separatorBuilder: (_, __) => const SizedBox(height: 12),
+                itemBuilder: (context, index) {
+                  final a = kAssistants[index];
+                  final isConnected = _connected[a.id] ?? false;
+                  return _AssistantTile(
+                    assistant: a,
+                    isConnected: isConnected,
+                    onTap: () => _openSetup(a),
+                  );
+                },
+              ),
       ),
     );
   }

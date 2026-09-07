@@ -1,11 +1,40 @@
 import 'package:flutter/material.dart';
+import '../services/settings_service.dart';
 import '../theme/app_theme.dart';
 import 'auth_screen.dart';
 import 'manage_assistants_screen.dart';
 import 'profile_screen.dart';
 
-class SettingsScreen extends StatelessWidget {
+class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
+
+  @override
+  State<SettingsScreen> createState() => _SettingsScreenState();
+}
+
+class _SettingsScreenState extends State<SettingsScreen> {
+  bool _smartTitles = false;
+  bool _isLoading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    final value = await SettingsService.instance.smartTitlesEnabled();
+    if (!mounted) return;
+    setState(() {
+      _smartTitles = value;
+      _isLoading = false;
+    });
+  }
+
+  Future<void> _toggleSmartTitles(bool value) async {
+    setState(() => _smartTitles = value);
+    await SettingsService.instance.setSmartTitlesEnabled(value);
+  }
 
   void _signOut(BuildContext context) {
     Navigator.of(context).pushAndRemoveUntil(
@@ -46,6 +75,15 @@ class SettingsScreen extends StatelessWidget {
             ),
             const SizedBox(height: 24),
             _SectionLabel('Preferences'),
+            if (!_isLoading)
+              _SettingsSwitchTile(
+                icon: Icons.title_outlined,
+                label: 'Smart chat titles',
+                subtitle: 'Ask an assistant to name new chats instead of '
+                    'using the first message.',
+                value: _smartTitles,
+                onChanged: _toggleSmartTitles,
+              ),
             _SettingsTile(
               icon: Icons.palette_outlined,
               label: 'Appearance',
@@ -141,6 +179,62 @@ class _SettingsTile extends StatelessWidget {
               ],
             ),
           ),
+        ),
+      ),
+    );
+  }
+}
+
+class _SettingsSwitchTile extends StatelessWidget {
+  const _SettingsSwitchTile({
+    required this.icon,
+    required this.label,
+    required this.subtitle,
+    required this.value,
+    required this.onChanged,
+  });
+
+  final IconData icon;
+  final String label;
+  final String subtitle;
+  final bool value;
+  final ValueChanged<bool> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+        decoration: BoxDecoration(
+          color: AppColors.surface,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: AppColors.border),
+        ),
+        child: Row(
+          children: [
+            Icon(icon, size: 20, color: AppColors.textSecondary),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(label,
+                      style: const TextStyle(
+                          color: AppColors.textPrimary, fontSize: 14)),
+                  const SizedBox(height: 2),
+                  Text(subtitle,
+                      style: const TextStyle(
+                          color: AppColors.textMuted, fontSize: 12, height: 1.3)),
+                ],
+              ),
+            ),
+            Switch(
+              value: value,
+              onChanged: onChanged,
+              activeThumbColor: AppColors.primary,
+            ),
+          ],
         ),
       ),
     );

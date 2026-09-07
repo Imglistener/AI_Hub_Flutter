@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
+import '../services/onboarding_service.dart';
 import '../theme/app_theme.dart';
 import 'auth_screen.dart';
-
 class _OnboardingPage {
   const _OnboardingPage({
     required this.icon,
@@ -54,8 +54,9 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     super.dispose();
   }
 
-  void _finish() {
-    // TODO: persist "has seen onboarding" flag once storage is wired up.
+  Future<void> _finish() async {
+    await OnboardingService.instance.markOnboardingComplete();
+    if (!mounted) return;
     Navigator.of(context).pushReplacement(
       MaterialPageRoute(builder: (context) => const AuthScreen()),
     );

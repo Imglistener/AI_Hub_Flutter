@@ -51,9 +51,15 @@ const List<Assistant> kAssistants = [
 ];
 
 class ChatMessage {
-  const ChatMessage({required this.text, required this.isUser, this.isLoading = false});
+  const ChatMessage({
+    required this.text,
+    required this.isUser,
+    this.isLoading = false,
+    this.isError = false,
+  });
 
   final String text;
   final bool isUser;
   final bool isLoading;
+  final bool isError;
 }

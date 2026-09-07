@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../services/auth_service.dart';
+import '../services/onboarding_service.dart';
 import '../theme/app_theme.dart';
 import 'auth_screen.dart';
 import 'hub_screen.dart';
@@ -20,13 +21,13 @@ class _SplashScreenState extends State<SplashScreen> {
   }
 
   Future<void> _bootstrap() async {
-    // TODO: replace with a real persisted flag (e.g. shared_preferences)
-    // once we wire up local storage for onboarding state.
-    const hasSeenOnboarding = false;
-
+    final results = await Future.wait([
+      OnboardingService.instance.hasSeenOnboarding(),
+      Future.delayed(const Duration(milliseconds: 900)),
+    ]);
+    final hasSeenOnboarding = results[0] as bool;
     final isSignedIn = AuthService.instance.isSignedIn;
 
-    await Future.delayed(const Duration(milliseconds: 900));
     if (!mounted) return;
 
     Widget destination;
