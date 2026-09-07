@@ -2,7 +2,6 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import '../models/assistant.dart';
 import '../models/conversation.dart';
-import '../services/api_key_service.dart';
 import '../services/assistant_api_service.dart';
 import '../services/assistant_registry.dart';
 import '../services/conversation_service.dart';
@@ -150,31 +149,27 @@ class _HubScreenState extends State<HubScreen> {
     await Future.wait(targets.map((id) => _sendToOne(id, text, conversationId!)));
   }
 
-  Future<void> _sendToOne(String assistantId, String prompt, String conversationId) async {
+   Future<void> _sendToOne(String assistantId, String prompt, String conversationId) async {
     String resultText;
     bool isError = false;
 
-    final apiKey = await ApiKeyService.instance.getKey(assistantId);
-    if (apiKey == null || apiKey.isEmpty) {
-      resultText = 'Not connected. Add an API key in Settings → Manage assistants.';
+    final client = await AssistantApiRegistry.build(assistantId);
+    if (client == null) {
+      resultText = assistantId == 'custom'
+          ? 'Not connected. Set up your custom assistant in Settings → Manage assistants.'
+          : 'Not connected. Add an API key in Settings → Manage assistants.';
       isError = true;
     } else {
-      final client = AssistantApiRegistry.clientFor(assistantId, apiKey);
-      if (client == null) {
-        resultText = 'No client configured for this assistant.';
+      final history = _conversations[assistantId]!
+          .sublist(0, _conversations[assistantId]!.length - 2);
+      try {
+        resultText = await client.sendMessage(prompt: prompt, history: history);
+      } on AssistantApiException catch (e) {
+        resultText = e.message;
         isError = true;
-      } else {
-        final history = _conversations[assistantId]!
-            .sublist(0, _conversations[assistantId]!.length - 2);
-        try {
-          resultText = await client.sendMessage(prompt: prompt, history: history);
-        } on AssistantApiException catch (e) {
-          resultText = e.message;
-          isError = true;
-        } catch (_) {
-          resultText = 'Something went wrong. Please try again.';
-          isError = true;
-        }
+      } catch (_) {
+        resultText = 'Something went wrong. Please try again.';
+        isError = true;
       }
     }
 
@@ -194,16 +189,13 @@ class _HubScreenState extends State<HubScreen> {
       ));
     }
   }
-
-  Future<void> _generateSmartTitle(
+   Future<void> _generateSmartTitle(
     String conversationId,
     String firstMessage,
     String assistantId,
   ) async {
     try {
-      final apiKey = await ApiKeyService.instance.getKey(assistantId);
-      if (apiKey == null || apiKey.isEmpty) return;
-      final client = AssistantApiRegistry.clientFor(assistantId, apiKey);
+      final client = await AssistantApiRegistry.build(assistantId);
       if (client == null) return;
 
       final rawTitle = await client.sendMessage(
@@ -230,7 +222,6 @@ class _HubScreenState extends State<HubScreen> {
       // Best-effort — keep the fallback (truncated-text) title on failure.
     }
   }
-
   void _startNewChat() {
     setState(() {
       _activeConversationId = null;

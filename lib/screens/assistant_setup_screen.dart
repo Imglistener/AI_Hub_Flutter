@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import '../models/assistant.dart';
+import '../models/custom_assistant_config.dart';
 import '../services/api_key_service.dart';
+import '../services/custom_assistant_service.dart';
 import '../theme/app_theme.dart';
 
 class AssistantSetupScreen extends StatefulWidget {
@@ -20,46 +22,80 @@ class AssistantSetupScreen extends StatefulWidget {
 class _AssistantSetupScreenState extends State<AssistantSetupScreen> {
   final _formKey = GlobalKey<FormState>();
   final _apiKeyController = TextEditingController();
+  final _endpointController = TextEditingController();
+  final _modelController = TextEditingController();
+
   bool _obscureKey = true;
   bool _isSaving = false;
   bool _isConnected = false;
+
+  bool get _isCustom => widget.assistant.id == 'custom';
 
   @override
   void initState() {
     super.initState();
     _isConnected = widget.isConnected;
-    _loadExistingKey();
+    _loadExisting();
   }
 
-  Future<void> _loadExistingKey() async {
-    final existing = await ApiKeyService.instance.getKey(widget.assistant.id);
-    if (!mounted || existing == null) return;
-    setState(() {
-      _apiKeyController.text = existing;
-      _isConnected = true;
-    });
+  Future<void> _loadExisting() async {
+    if (_isCustom) {
+      final config = await CustomAssistantService.instance.getConfig();
+      if (!mounted || config == null) return;
+      setState(() {
+        _endpointController.text = config.endpoint;
+        _modelController.text = config.model;
+        _apiKeyController.text = config.apiKey;
+        _isConnected = true;
+      });
+    } else {
+      final existing = await ApiKeyService.instance.getKey(widget.assistant.id);
+      if (!mounted || existing == null) return;
+      setState(() {
+        _apiKeyController.text = existing;
+        _isConnected = true;
+      });
+    }
   }
 
   @override
   void dispose() {
     _apiKeyController.dispose();
+    _endpointController.dispose();
+    _modelController.dispose();
     super.dispose();
   }
 
   Future<void> _save() async {
     if (!_formKey.currentState!.validate()) return;
     setState(() => _isSaving = true);
-    await ApiKeyService.instance.saveKey(
-      widget.assistant.id,
-      _apiKeyController.text.trim(),
-    );
+
+    if (_isCustom) {
+      await CustomAssistantService.instance.saveConfig(
+        CustomAssistantConfig(
+          endpoint: _endpointController.text.trim(),
+          apiKey: _apiKeyController.text.trim(),
+          model: _modelController.text.trim(),
+        ),
+      );
+    } else {
+      await ApiKeyService.instance.saveKey(
+        widget.assistant.id,
+        _apiKeyController.text.trim(),
+      );
+    }
+
     if (!mounted) return;
     setState(() => _isSaving = false);
     Navigator.of(context).pop(true);
   }
 
   Future<void> _disconnect() async {
-    await ApiKeyService.instance.deleteKey(widget.assistant.id);
+    if (_isCustom) {
+      await CustomAssistantService.instance.deleteConfig();
+    } else {
+      await ApiKeyService.instance.deleteKey(widget.assistant.id);
+    }
     if (!mounted) return;
     Navigator.of(context).pop(false);
   }
@@ -118,11 +154,39 @@ class _AssistantSetupScreenState extends State<AssistantSetupScreen> {
                   ],
                 ),
                 const SizedBox(height: 28),
+                if (_isCustom) ...[
+                  TextFormField(
+                    controller: _endpointController,
+                    keyboardType: TextInputType.url,
+                    decoration: const InputDecoration(
+                      labelText: 'Endpoint URL',
+                      hintText: 'https://your-server.com/v1/chat/completions',
+                      prefixIcon: Icon(Icons.link, color: AppColors.textSecondary),
+                    ),
+                    validator: (v) {
+                      if (v == null || v.trim().isEmpty) return 'Enter an endpoint URL';
+                      if (!v.trim().startsWith('http')) return 'Must start with http:// or https://';
+                      return null;
+                    },
+                  ),
+                  const SizedBox(height: 16),
+                  TextFormField(
+                    controller: _modelController,
+                    decoration: const InputDecoration(
+                      labelText: 'Model name',
+                      hintText: 'e.g. llama3, mixtral, gpt-4o',
+                      prefixIcon: Icon(Icons.memory, color: AppColors.textSecondary),
+                    ),
+                    validator: (v) =>
+                        (v == null || v.trim().isEmpty) ? 'Enter a model name' : null,
+                  ),
+                  const SizedBox(height: 16),
+                ],
                 TextFormField(
                   controller: _apiKeyController,
                   obscureText: _obscureKey,
                   decoration: InputDecoration(
-                    labelText: 'API key',
+                    labelText: _isCustom ? 'API key (optional)' : 'API key',
                     prefixIcon: const Icon(Icons.vpn_key_outlined,
                         color: AppColors.textSecondary),
                     suffixIcon: IconButton(
@@ -136,14 +200,20 @@ class _AssistantSetupScreenState extends State<AssistantSetupScreen> {
                           setState(() => _obscureKey = !_obscureKey),
                     ),
                   ),
-                  validator: (v) => (v == null || v.trim().length < 8)
-                      ? 'Enter a valid API key'
-                      : null,
+                  validator: (v) {
+                    if (_isCustom) return null; // optional for self-hosted setups
+                    return (v == null || v.trim().length < 8)
+                        ? 'Enter a valid API key'
+                        : null;
+                  },
                 ),
                 const SizedBox(height: 12),
                 Text(
-                  'Your key is stored in this device\'s secure keychain and is '
-                  'only ever sent directly to ${a.name}\'s servers.',
+                  _isCustom
+                      ? 'Assumes an OpenAI-compatible chat completions API. '
+                        'Your endpoint and key are stored in this device\'s secure keychain.'
+                      : 'Your key is stored in this device\'s secure keychain and is '
+                        'only ever sent directly to ${a.name}\'s servers.',
                   style: const TextStyle(
                       color: AppColors.textMuted, fontSize: 12, height: 1.4),
                 ),

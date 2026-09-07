@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../models/assistant.dart';
 import '../services/api_key_service.dart';
+import '../services/custom_assistant_service.dart';
 import '../theme/app_theme.dart';
 import 'assistant_setup_screen.dart';
 
@@ -24,8 +25,10 @@ class _ManageAssistantsScreenState extends State<ManageAssistantsScreen> {
 
   Future<void> _loadConnections() async {
     final entries = await Future.wait(kAssistants.map((a) async {
-      final hasKey = await ApiKeyService.instance.hasKey(a.id);
-      return MapEntry(a.id, hasKey);
+      final isConnected = a.id == 'custom'
+          ? await CustomAssistantService.instance.hasConfig()
+          : await ApiKeyService.instance.hasKey(a.id);
+      return MapEntry(a.id, isConnected);
     }));
     if (!mounted) return;
     setState(() {

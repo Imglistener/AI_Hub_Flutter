@@ -48,6 +48,20 @@ const List<Assistant> kAssistants = [
     color: AppColors.primaryVariant,
     icon: Icons.bolt_outlined,
   ),
+  Assistant(
+    id: 'deepseek',
+    name: 'DeepSeek',
+    shortLabel: 'D',
+    color: Color(0xFF536DFE),
+    icon: Icons.psychology_outlined,
+  ),
+  Assistant(
+    id: 'custom',
+    name: 'Custom',
+    shortLabel: '?',
+    color: AppColors.textSecondary,
+    icon: Icons.extension_outlined,
+  ),
 ];
 
 class ChatMessage {
